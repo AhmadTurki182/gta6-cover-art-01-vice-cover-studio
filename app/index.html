@@ -3,125 +3,111 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Vice Cover Studio — turn any photo and caption into multi-panel GTA-style cover art with a Vice City sunset or neon grade, exported as a PNG. Runs fully offline.">
-<title>Vice Cover Studio — GTA-style cover art maker</title>
+<title>Vice Cover Studio — GTA-style multi-panel cover maker</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-mark">VICE</span>
-    <span class="brand-name">Cover Studio</span>
-    <span class="brand-tag">Turn any photo into a Vice City poster</span>
-  </div>
-  <div class="top-actions">
-    <button id="randomizeBtn" type="button" title="Random layout, grade and photos">Shuffle look</button>
-    <button id="resetBtn" type="button" title="Back to the default poster">Reset</button>
-  </div>
-</header>
+<img id="shotCover" alt="Exported Vice Cover Studio cover art">
+<div class="studio-shell">
+  <header class="studio-header">
+    <h1>Vice Cover Studio</h1>
+    <p>Turn your photos + a caption into multi-panel Vice City sunset cover art. Offline — photos never leave your machine.</p>
+  </header>
 
-<main class="studio">
-  <section class="preview-column">
-    <div class="preview-frame">
-      <canvas id="coverCanvas" width="1920" height="1080" aria-label="Live cover preview. Click a panel to select it, drag to move the photo inside it."></canvas>
-      <p id="previewHint" class="preview-hint">Click a panel to select it, then drag the photo inside it.</p>
-    </div>
-    <div class="size-row" role="group" aria-label="Export size">
-      <span class="row-label">Export size</span>
-      <button type="button" class="size-btn" data-size="1080x1080">1080 × 1080</button>
-      <button type="button" class="size-btn" data-size="1080x1350">1080 × 1350</button>
-      <button type="button" class="size-btn is-active" data-size="1920x1080">1920 × 1080</button>
-      <button id="exportBtn" type="button" class="export-btn">Export PNG</button>
-    </div>
-    <p id="exportNote" class="export-note" aria-live="polite">Ready — your photos never leave this machine.</p>
-  </section>
+  <main class="studio-main">
+    <section class="control-panel" aria-label="Cover controls">
+      <div class="control-group">
+        <span class="group-label">1 · Your photos (up to 4)</span>
+        <label class="upload-drop" for="photoInput">Drop photos here or click to choose — JPG / PNG
+          <input id="photoInput" type="file" accept="image/*" multiple>
+        </label>
+        <div class="photo-thumbs" id="photoThumbs"></div>
+        <small>Demo photos are loaded for you — replace them with your own. Click a thumbnail, then pick a panel below to place it.</small>
+      </div>
 
-  <aside class="controls-column">
-    <section class="control-group" aria-label="Poster layout">
-      <h2>1 · Layout</h2>
-      <div class="layout-grid" id="layoutGrid">
-        <button type="button" class="layout-btn is-active" data-layout="grid">
-          <span class="layout-thumb layout-thumb-grid"></span>2 × 2 Grid
-        </button>
-        <button type="button" class="layout-btn" data-layout="hero">
-          <span class="layout-thumb layout-thumb-hero"></span>Hero + Strip
-        </button>
-        <button type="button" class="layout-btn" data-layout="triptych">
-          <span class="layout-thumb layout-thumb-triptych"></span>3-Panel Vertical
-        </button>
-        <button type="button" class="layout-btn" data-layout="duo">
-          <span class="layout-thumb layout-thumb-duo"></span>Duo Split
-        </button>
+      <div class="control-group">
+        <span class="group-label">2 · Layout</span>
+        <div class="button-row" id="layoutButtons">
+          <button class="chip-button active" type="button" data-layout="grid">2×2 Grid</button>
+          <button class="chip-button" type="button" data-layout="hero">Hero + Strip</button>
+          <button class="chip-button" type="button" data-layout="vertical">3-Panel Vertical</button>
+          <button class="chip-button" type="button" data-layout="duo">Duo Split</button>
+        </div>
+        <div class="button-row">
+          <button class="ghost-button" id="shuffleLayoutButton" type="button">Shuffle layout</button>
+          <button class="ghost-button" id="resetButton" type="button">Reset all</button>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <span class="group-label">3 · Panel — pick, place, crop</span>
+        <div class="panel-picker" id="panelPicker"></div>
+        <label for="zoomSlider">Zoom <span id="zoomValue">100%</span></label>
+        <input id="zoomSlider" type="range" min="100" max="260" value="100">
+        <label for="panXSlider">Pan left / right</label>
+        <input id="panXSlider" type="range" min="-100" max="100" value="0">
+        <label for="panYSlider">Pan up / down</label>
+        <input id="panYSlider" type="range" min="-100" max="100" value="0">
+        <div class="button-row">
+          <button class="ghost-button" id="rotateButton" type="button">Rotate 90°</button>
+          <button class="ghost-button" id="flipButton" type="button">Flip</button>
+          <button class="ghost-button" id="swapPhotoButton" type="button">Next photo in panel</button>
+        </div>
+        <small>Tip: drag directly on the preview to pan the selected panel.</small>
+      </div>
+
+      <div class="control-group">
+        <span class="group-label">4 · Vice grade</span>
+        <div class="button-row" id="gradeButtons">
+          <button class="chip-button active" type="button" data-grade="sunset">Sunset</button>
+          <button class="chip-button" type="button" data-grade="neon">Neon Nights</button>
+          <button class="chip-button" type="button" data-grade="noir">Noir</button>
+          <button class="chip-button" type="button" data-grade="pastel">Vice Pastel</button>
+        </div>
+        <label for="gradeStrength">Grade strength <span id="gradeStrengthValue">70%</span></label>
+        <input id="gradeStrength" type="range" min="0" max="100" value="70">
+      </div>
+
+      <div class="control-group">
+        <span class="group-label">5 · Caption lettering</span>
+        <label for="titleInput">Title</label>
+        <input id="titleInput" type="text" value="VICE HEIST" maxlength="24">
+        <label for="taglineInput">Tagline</label>
+        <input id="taglineInput" type="text" value="One last sunset. One last score." maxlength="60">
+        <label for="nameInput">Name / handle</label>
+        <input id="nameInput" type="text" value="STARRING YOU" maxlength="30">
+        <div class="button-row" id="titlePositionButtons">
+          <button class="chip-button active" type="button" data-title-pos="top">Title on top</button>
+          <button class="chip-button" type="button" data-title-pos="bottom">Title at bottom</button>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <span class="group-label">6 · Export</span>
+        <div class="button-row" id="exportSizeButtons">
+          <button class="chip-button" type="button" data-export-size="1080x1080">1080 × 1080</button>
+          <button class="chip-button" type="button" data-export-size="1080x1350">1080 × 1350</button>
+          <button class="chip-button active" type="button" data-export-size="1920x1080">1920 × 1080</button>
+        </div>
+        <button class="action-button" id="exportButton" type="button">Export PNG cover</button>
+        <small id="exportStatus">Ready. One click downloads your cover as a PNG.</small>
       </div>
     </section>
 
-    <section class="control-group" aria-label="Colour grade">
-      <h2>2 · Vice grade</h2>
-      <div class="grade-row" id="gradeRow">
-        <button type="button" class="grade-btn is-active" data-grade="sunset">Sunset</button>
-        <button type="button" class="grade-btn" data-grade="neon">Neon Nights</button>
-        <button type="button" class="grade-btn" data-grade="noir">Noir</button>
-        <button type="button" class="grade-btn" data-grade="pastel">Vice Pastel</button>
-      </div>
-      <label class="slider-label">Grade strength
-        <input id="gradeStrength" type="range" min="0" max="100" value="75">
-      </label>
-    </section>
-
-    <section class="control-group" aria-label="Photos">
-      <h2>3 · Photos</h2>
-      <p class="help-text">Add up to 4 of your own photos. They stay on this machine — nothing is uploaded.</p>
-      <div class="photo-tray" id="photoTray"></div>
-      <label class="upload-btn">Add photos
-        <input id="photoUpload" type="file" accept="image/*" multiple hidden>
-      </label>
-      <p class="help-text">Tap a photo above to put it in the selected panel.</p>
-    </section>
-
-    <section class="control-group" aria-label="Selected panel">
-      <h2>4 · Selected panel</h2>
-      <p id="selectedPanelLabel" class="help-text">Panel 1 of 4</p>
-      <label class="slider-label">Zoom
-        <input id="zoomSlider" type="range" min="100" max="250" value="100">
-      </label>
-      <label class="slider-label">Rotate
-        <input id="rotateSlider" type="range" min="-45" max="45" value="0">
-      </label>
-      <div class="panel-actions">
-        <button id="flipBtn" type="button">Flip photo</button>
-        <button id="nextPhotoBtn" type="button">Next photo</button>
-        <button id="resetPanelBtn" type="button">Reset panel</button>
+    <section class="preview-area" aria-label="Live cover preview">
+      <h2>Live preview — drag the cover to pan the selected panel</h2>
+      <div class="preview-wrap"><canvas id="coverPreview" width="960" height="540"></canvas></div>
+      <div class="preview-meta">
+        <span>Layout: <strong id="metaLayout">2×2 Grid</strong></span>
+        <span>Grade: <strong id="metaGrade">Sunset</strong></span>
+        <span>Export: <strong id="metaSize">1920 × 1080</strong></span>
+        <span>Photos: <strong id="metaPhotos">2 demo photos</strong></span>
       </div>
     </section>
+  </main>
 
-    <section class="control-group" aria-label="Caption">
-      <h2>5 · Caption</h2>
-      <label class="field-label">Big title
-        <input id="titleInput" type="text" value="VICE CITY" maxlength="24">
-      </label>
-      <label class="field-label">Tagline
-        <input id="taglineInput" type="text" value="One last score under the neon sun" maxlength="64">
-      </label>
-      <label class="field-label">Credit line
-        <input id="creditInput" type="text" value="A VICE COVER STUDIO POSTER" maxlength="48">
-      </label>
-      <label class="field-label">Title position
-        <select id="titlePosSelect">
-          <option value="top" selected>Top of the poster</option>
-          <option value="bottom">Bottom of the poster</option>
-        </select>
-      </label>
-      <label class="check-label">
-        <input id="borderToggle" type="checkbox" checked> Poster border
-      </label>
-    </section>
-  </aside>
-</main>
-
-<footer class="footnote">
-  <p>Vice Cover Studio runs fully offline. Original artwork — no Rockstar Games logo, artwork or fonts.</p>
-</footer>
-<div id="selftest" aria-hidden="true"></div>
-<script src="app.js"></script>
+  <footer class="studio-footer">Original design — no Rockstar Games logo, artwork or fonts. Lettering uses system fonts only. All work happens on your device.</footer>
+</div>
+<script type="module" src="app.js"></script>
 </body>
 </html>

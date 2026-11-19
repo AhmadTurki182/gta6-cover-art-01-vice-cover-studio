@@ -1,685 +1,622 @@
-// Vice Cover Studio — offline multi-panel GTA-style cover art maker.
-// All rendering happens on <canvas>; photos are read locally and never leave
-// the machine. No network requests, no external fonts: system fonts only.
+// Vice Cover Studio — canvas cover maker. All photos stay on this machine:
+// uploads are read with FileReader into memory and never sent anywhere.
+// Lettering uses system fonts only; no Rockstar logo, artwork or font.
 
-const coverCanvas = document.getElementById('coverCanvas');
-const previewCtx = coverCanvas.getContext('2d');
-const exportNote = document.getElementById('exportNote');
-const selftestBox = document.getElementById('selftest');
+const DEMO_PHOTOS = ['samples/boulevard.jpg', 'samples/pier.jpg'];
+const LAYOUT_NAMES = { grid: '2×2 Grid', hero: 'Hero + Strip', vertical: '3-Panel Vertical', duo: 'Duo Split' };
+const GRADE_NAMES = { sunset: 'Sunset', neon: 'Neon Nights', noir: 'Noir', pastel: 'Vice Pastel' };
 
-// ---------------------------------------------------------------------------
-// Poster state
-// ---------------------------------------------------------------------------
-
-const DEMO_PHOTOS = [
-  { src: 'samples/pier.jpg', name: 'Pier at dusk' },
-  { src: 'samples/boulevard.jpg', name: 'Boulevard night' },
-];
-
-const EXPORT_SIZES = {
-  '1080x1080': { w: 1080, h: 1080, label: 'Square post' },
-  '1080x1350': { w: 1080, h: 1350, label: 'Portrait post' },
-  '1920x1080': { w: 1920, h: 1080, label: 'Landscape cover' },
+const GRADE_STYLES = {
+  sunset: { filter: 'saturate(1.4) contrast(1.1) brightness(1.03)', top: '#ff7a18', bottom: '#ff2e88', mid: '#7b2ff7' },
+  neon: { filter: 'saturate(1.7) hue-rotate(-18deg) contrast(1.18)', top: '#19e3ff', bottom: '#ff2e88', mid: '#7b2ff7' },
+  noir: { filter: 'grayscale(1) contrast(1.28) brightness(0.96)', top: '#9db4c8', bottom: '#101018', mid: '#5a6b7d' },
+  pastel: { filter: 'saturate(1.15) brightness(1.1) sepia(0.22)', top: '#ffd319', bottom: '#ff9ecf', mid: '#8ec8ff' },
 };
 
-function freshPanel(photoIndex) {
-  return { photo: photoIndex, zoom: 1, panX: 0, panY: 0, rotate: 0, flip: false };
-}
+const EXPORT_SIZES = { '1080x1080': [1080, 1080], '1080x1350': [1080, 1350], '1920x1080': [1920, 1080] };
 
-function defaultPosterState() {
-  return {
-    layout: 'grid',
-    grade: 'sunset',
-    gradeStrength: 0.75,
-    exportSize: '1920x1080',
-    title: 'VICE CITY',
-    tagline: 'One last score under the neon sun',
-    credit: 'A VICE COVER STUDIO POSTER',
-    titlePos: 'top',
-    border: true,
-    selectedPanel: 0,
-    panels: [freshPanel(0), freshPanel(1), freshPanel(0), freshPanel(1)],
-  };
-}
-
-const poster = defaultPosterState();
-const photoLibrary = DEMO_PHOTOS.map((p) => ({ ...p, image: null, loaded: false }));
-
-// ---------------------------------------------------------------------------
-// Colour grades — Vice City sunset / neon palettes, all original
-// ---------------------------------------------------------------------------
-
-const VICE_GRADES = {
-  sunset: {
-    washTop: 'rgba(255, 122, 26, 0.28)', washBottom: 'rgba(255, 45, 120, 0.30)',
-    glow: 'rgba(255, 190, 80, 0.55)', accent: '#ff7a1a', ink: '#1a0b2e',
-    duotoneA: '#ff9a3d', duotoneB: '#7b2ff7', vignette: 0.42, grain: 0.05,
-  },
-  neon: {
-    washTop: 'rgba(0, 229, 255, 0.22)', washBottom: 'rgba(255, 0, 153, 0.32)',
-    glow: 'rgba(0, 229, 255, 0.5)', accent: '#00e5ff', ink: '#05021a',
-    duotoneA: '#00e5ff', duotoneB: '#ff0099', vignette: 0.5, grain: 0.06,
-  },
-  noir: {
-    washTop: 'rgba(40, 40, 60, 0.30)', washBottom: 'rgba(0, 0, 0, 0.45)',
-    glow: 'rgba(220, 220, 235, 0.25)', accent: '#e8e8f0', ink: '#000000',
-    duotoneA: '#9aa0b5', duotoneB: '#101018', vignette: 0.6, grain: 0.09,
-  },
-  pastel: {
-    washTop: 'rgba(255, 183, 197, 0.26)', washBottom: 'rgba(125, 211, 252, 0.28)',
-    glow: 'rgba(255, 214, 140, 0.45)', accent: '#ff8fb3', ink: '#2b1a3a',
-    duotoneA: '#ffb7c5', duotoneB: '#7dd3fc', vignette: 0.3, grain: 0.04,
-  },
+const state = {
+  photos: [], // { name, image: HTMLImageElement, url }
+  layout: 'grid',
+  grade: 'sunset',
+  gradeStrength: 70,
+  title: 'VICE HEIST',
+  tagline: 'One last sunset. One last score.',
+  byline: 'STARRING YOU',
+  titlePosition: 'top',
+  exportSize: '1920x1080',
+  selectedPanel: 0,
+  selectedPhoto: 0,
+  panels: [], // { photo, zoom, panX, panY, rotation, flipped }
 };
 
-// ---------------------------------------------------------------------------
-// Layouts — panel rectangles as fractions of the cover (x, y, w, h)
-// ---------------------------------------------------------------------------
+const previewCanvas = document.getElementById('coverPreview');
+const previewCtx = previewCanvas.getContext('2d');
+const shotImage = document.getElementById('shotCover');
 
-const POSTER_LAYOUTS = {
-  grid: {
-    panels: 4,
-    rects: [
-      [0.03, 0.03, 0.46, 0.44], [0.51, 0.03, 0.46, 0.44],
-      [0.03, 0.53, 0.46, 0.44], [0.51, 0.53, 0.46, 0.44],
-    ],
-  },
-  hero: {
-    panels: 4,
-    rects: [
-      [0.03, 0.03, 0.62, 0.94], [0.67, 0.03, 0.30, 0.30],
-      [0.67, 0.35, 0.30, 0.30], [0.67, 0.67, 0.30, 0.30],
-    ],
-  },
-  triptych: {
-    panels: 3,
-    rects: [
-      [0.03, 0.03, 0.30, 0.94], [0.35, 0.03, 0.30, 0.94],
-      [0.67, 0.03, 0.30, 0.94],
-    ],
-  },
-  duo: {
-    panels: 2,
-    rects: [
-      [0.03, 0.03, 0.46, 0.94], [0.51, 0.03, 0.46, 0.94],
-    ],
-  },
-};
-
-function activePanelCount() {
-  return POSTER_LAYOUTS[poster.layout].panels;
+function defaultPanels(count) {
+  const panels = [];
+  for (let i = 0; i < count; i++) {
+    panels.push({ photo: i % 2, zoom: 1, panX: 0, panY: 0, rotation: 0, flipped: false });
+  }
+  return panels;
 }
 
-function panelRect(index, coverW, coverH) {
-  const r = POSTER_LAYOUTS[poster.layout].rects[index];
-  return { x: r[0] * coverW, y: r[1] * coverH, w: r[2] * coverW, h: r[3] * coverH };
+function panelCountForLayout(layout) {
+  if (layout === 'grid') return 4;
+  if (layout === 'hero') return 4;
+  if (layout === 'vertical') return 3;
+  return 2;
 }
 
-// ---------------------------------------------------------------------------
-// Photo loading — FileReader / object URLs, local only
-// ---------------------------------------------------------------------------
-
-function loadPhotoImage(entry) {
-  return new Promise((resolve) => {
-    if (entry.loaded) { resolve(entry.image); return; }
-    const img = new Image();
-    img.onload = () => { entry.image = img; entry.loaded = true; resolve(img); };
-    img.onerror = () => { entry.image = null; entry.loaded = false; resolve(null); };
-    img.src = entry.src;
-  });
-}
-
-async function loadAllDemoPhotos() {
-  await Promise.all(photoLibrary.map((entry) => loadPhotoImage(entry)));
+function applyLayout(layout) {
+  state.layout = layout;
+  state.panels = defaultPanels(panelCountForLayout(layout));
+  state.selectedPanel = 0;
+  rebuildPanelPicker();
+  syncLayoutButtons();
   renderPreview();
 }
 
-function addUploadedPhotos(fileList) {
-  const files = Array.from(fileList).filter((f) => f.type.startsWith('image/'));
-  for (const file of files) {
-    if (photoLibrary.length >= 6) break;
-    const url = URL.createObjectURL(file);
-    const entry = { src: url, name: file.name.replace(/\.[^.]+$/, ''), image: null, loaded: false };
-    photoLibrary.push(entry);
-    loadPhotoImage(entry).then(() => renderPreview());
+function layoutRects(layout, width, height) {
+  const gap = Math.round(width * 0.008);
+  const frame = Math.round(width * 0.012);
+  const innerX = frame, innerY = frame;
+  const innerW = width - frame * 2, innerH = height - frame * 2;
+  if (layout === 'grid') {
+    const cw = (innerW - gap) / 2, ch = (innerH - gap) / 2;
+    return [
+      { x: innerX, y: innerY, w: cw, h: ch },
+      { x: innerX + cw + gap, y: innerY, w: cw, h: ch },
+      { x: innerX, y: innerY + ch + gap, w: cw, h: ch },
+      { x: innerX + cw + gap, y: innerY + ch + gap, w: cw, h: ch },
+    ];
   }
-  rebuildPhotoTray();
-  renderPreview();
+  if (layout === 'hero') {
+    const heroH = innerH * 0.62;
+    const stripH = innerH - heroH - gap;
+    const sw = (innerW - gap * 2) / 3;
+    return [
+      { x: innerX, y: innerY, w: innerW, h: heroH },
+      { x: innerX, y: innerY + heroH + gap, w: sw, h: stripH },
+      { x: innerX + sw + gap, y: innerY + heroH + gap, w: sw, h: stripH },
+      { x: innerX + (sw + gap) * 2, y: innerY + heroH + gap, w: sw, h: stripH },
+    ];
+  }
+  if (layout === 'vertical') {
+    const cw = (innerW - gap * 2) / 3;
+    return [0, 1, 2].map((i) => ({ x: innerX + i * (cw + gap), y: innerY, w: cw, h: innerH }));
+  }
+  const cw = (innerW - gap) / 2;
+  return [
+    { x: innerX, y: innerY, w: cw, h: innerH },
+    { x: innerX + cw + gap, y: innerY, w: cw, h: innerH },
+  ];
 }
 
-// ---------------------------------------------------------------------------
-// Film grain — one seeded noise tile, reused so every render is stable
-// ---------------------------------------------------------------------------
-
-let grainTile = null;
-function makeGrainTile() {
-  if (grainTile) return grainTile;
-  const tile = document.createElement('canvas');
-  tile.width = 160; tile.height = 160;
-  const tctx = tile.getContext('2d');
-  const data = tctx.createImageData(160, 160);
-  let seed = 20261119;
-  const nextRand = () => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed / 2147483648;
+function seededRandom(seed) {
+  let value = seed * 9301 + 49297;
+  return () => {
+    value = (value * 9301 + 49297) % 233280;
+    return value / 233280;
   };
-  for (let i = 0; i < data.data.length; i += 4) {
-    const v = Math.floor(nextRand() * 255);
-    data.data[i] = v; data.data[i + 1] = v; data.data[i + 2] = v; data.data[i + 3] = 255;
-  }
-  tctx.putImageData(data, 0, 0);
-  grainTile = tile;
-  return tile;
 }
 
-function paintGrain(ctx, w, h, strength) {
-  if (strength <= 0) return;
-  const tile = makeGrainTile();
-  const pattern = ctx.createPattern(tile, 'repeat');
-  ctx.save();
-  ctx.globalAlpha = strength;
-  ctx.globalCompositeOperation = 'overlay';
-  ctx.fillStyle = pattern;
-  ctx.fillRect(0, 0, w, h);
-  ctx.restore();
-}
-
-// ---------------------------------------------------------------------------
-// Drawing one photo into one panel (cover-fit + pan / zoom / rotate / flip)
-// ---------------------------------------------------------------------------
-
-function drawPhotoIntoPanel(ctx, image, rect, panel) {
-  if (!image) {
-    ctx.save();
-    ctx.fillStyle = '#241534';
-    ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
-    ctx.fillStyle = '#ff7a1a';
-    ctx.font = `700 ${Math.max(14, rect.w * 0.05)}px Arial, sans-serif`;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('ADD A PHOTO', rect.x + rect.w / 2, rect.y + rect.h / 2);
-    ctx.restore();
-    return;
-  }
-  const scale = Math.max(rect.w / image.naturalWidth, rect.h / image.naturalHeight) * panel.zoom;
-  const drawW = image.naturalWidth * scale;
-  const drawH = image.naturalHeight * scale;
+function drawPanelPhoto(ctx, rect, panel, photo, panelIndex) {
   ctx.save();
   ctx.beginPath();
   ctx.rect(rect.x, rect.y, rect.w, rect.h);
   ctx.clip();
-  ctx.translate(rect.x + rect.w / 2 + panel.panX, rect.y + rect.h / 2 + panel.panY);
-  if (panel.rotate) ctx.rotate((panel.rotate * Math.PI) / 180);
-  if (panel.flip) ctx.scale(-1, 1);
-  ctx.drawImage(image, -drawW / 2, -drawH / 2, drawW, drawH);
+  ctx.fillStyle = '#241533';
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  if (photo && photo.image) {
+    const img = photo.image;
+    const baseScale = Math.max(rect.w / img.naturalWidth, rect.h / img.naturalHeight);
+    const scale = baseScale * panel.zoom;
+    const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
+    const cx = rect.x + rect.w / 2 + (panel.panX / 100) * rect.w * 0.5;
+    const cy = rect.y + rect.h / 2 + (panel.panY / 100) * rect.h * 0.5;
+    ctx.translate(cx, cy);
+    ctx.rotate((panel.rotation * Math.PI) / 180);
+    ctx.scale(panel.flipped ? -1 : 1, 1);
+    ctx.filter = GRADE_STYLES[state.grade].filter;
+    ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+    ctx.filter = 'none';
+  } else {
+    drawSunsetPlaceholder(ctx, rect, panelIndex);
+  }
   ctx.restore();
 }
 
-function paintGradeWash(ctx, rect, grade, strength) {
-  const wash = ctx.createLinearGradient(rect.x, rect.y, rect.x, rect.y + rect.h);
-  wash.addColorStop(0, grade.washTop);
-  wash.addColorStop(1, grade.washBottom);
+function drawSunsetPlaceholder(ctx, rect, seed) {
+  const gradient = ctx.createLinearGradient(rect.x, rect.y, rect.x, rect.y + rect.h);
+  gradient.addColorStop(0, '#2b0f4d');
+  gradient.addColorStop(0.5, '#ff7a18');
+  gradient.addColorStop(1, '#ff2e88');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  ctx.fillStyle = '#ffd319';
+  ctx.beginPath();
+  ctx.arc(rect.x + rect.w * 0.5, rect.y + rect.h * 0.62, rect.w * 0.18, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#1a0f2e';
+  ctx.beginPath();
+  ctx.moveTo(rect.x, rect.y + rect.h);
+  ctx.lineTo(rect.x + rect.w * 0.3, rect.y + rect.h * 0.55);
+  ctx.lineTo(rect.x + rect.w * 0.55, rect.y + rect.h);
+  ctx.lineTo(rect.x + rect.w * 0.75, rect.y + rect.h * 0.62);
+  ctx.lineTo(rect.x + rect.w, rect.y + rect.h);
+  ctx.closePath();
+  ctx.fill();
+  void seed;
+}
+
+function applyGradeOverlay(ctx, rect, panelIndex) {
+  const style = GRADE_STYLES[state.grade];
+  const strength = state.gradeStrength / 100;
+  const gradient = ctx.createLinearGradient(rect.x, rect.y, rect.x, rect.y + rect.h);
+  gradient.addColorStop(0, style.top);
+  gradient.addColorStop(0.55, style.mid);
+  gradient.addColorStop(1, style.bottom);
   ctx.save();
-  ctx.globalAlpha = strength;
-  ctx.fillStyle = wash;
+  ctx.globalAlpha = 0.16 * strength + 0.04;
+  ctx.globalCompositeOperation = 'overlay';
+  ctx.fillStyle = gradient;
   ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
-  ctx.globalCompositeOperation = 'soft-light';
-  const duo = ctx.createLinearGradient(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h);
-  duo.addColorStop(0, grade.duotoneA);
-  duo.addColorStop(1, grade.duotoneB);
-  ctx.fillStyle = duo;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 0.10 * strength;
+  const shade = ctx.createLinearGradient(rect.x, rect.y + rect.h * 0.55, rect.x, rect.y + rect.h);
+  shade.addColorStop(0, 'rgba(0,0,0,0)');
+  shade.addColorStop(1, 'rgba(10,2,24,0.55)');
+  ctx.fillStyle = shade;
   ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  ctx.restore();
+  drawGrain(ctx, rect, panelIndex);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+  ctx.lineWidth = Math.max(2, rect.w * 0.006);
+  ctx.strokeRect(rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2);
   ctx.restore();
 }
 
-function paintVignette(ctx, rect, strength) {
-  if (strength <= 0) return;
-  const cx = rect.x + rect.w / 2;
-  const cy = rect.y + rect.h / 2;
-  const radius = Math.max(rect.w, rect.h) * 0.72;
-  const vig = ctx.createRadialGradient(cx, cy, radius * 0.45, cx, cy, radius);
-  vig.addColorStop(0, 'rgba(0,0,0,0)');
-  vig.addColorStop(1, `rgba(0,0,0,${strength})`);
+function drawGrain(ctx, rect, seed) {
+  const rand = seededRandom(seed * 7919 + 13);
   ctx.save();
-  ctx.fillStyle = vig;
-  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  ctx.globalAlpha = 0.07;
+  ctx.fillStyle = '#ffffff';
+  for (let i = 0; i < 220; i++) {
+    const x = rect.x + rand() * rect.w;
+    const y = rect.y + rand() * rect.h;
+    ctx.fillRect(x, y, 1.6, 1.6);
+  }
   ctx.restore();
 }
 
-// ---------------------------------------------------------------------------
-// Bold poster lettering — heavy system-font caps with stroke + drop shadow
-// ---------------------------------------------------------------------------
-
-function paintPosterLettering(ctx, coverW, coverH, grade) {
-  // Title size is capped by the cover height so wide landscape covers never
-  // clip the caps at the top edge (1920x1080 was cutting "VICE CITY" off).
-  const titleSize = Math.round(Math.min(coverW * 0.085, coverH * 0.13));
-  const tagSize = Math.round(coverW * 0.024);
-  const creditSize = Math.round(coverW * 0.016);
-  const top = poster.titlePos === 'top';
-  const bandH = coverH * 0.16;
-  const bandY = top ? coverH * 0.03 : coverH * 0.81;
-
-  // Sun-glow band behind the lettering so it reads over any photo.
-  const band = ctx.createLinearGradient(0, bandY, 0, bandY + bandH);
-  band.addColorStop(0, 'rgba(10, 2, 24, 0.0)');
-  band.addColorStop(0.5, 'rgba(10, 2, 24, 0.55)');
-  band.addColorStop(1, 'rgba(10, 2, 24, 0.0)');
+function drawLettering(ctx, width, height) {
+  const frame = Math.round(width * 0.012);
+  const titleSize = Math.round(width * (state.title.length > 12 ? 0.075 : 0.105));
+  const tagSize = Math.round(width * 0.024);
+  const bySize = Math.round(width * 0.02);
+  const bandH = titleSize * 2.1;
+  const bandY = state.titlePosition === 'top' ? frame : height - frame - bandH;
   ctx.save();
-  ctx.fillStyle = band;
-  ctx.fillRect(0, bandY, coverW, bandH);
-  ctx.restore();
-
-  const cx = coverW / 2;
-  ctx.save();
+  const scrim = ctx.createLinearGradient(0, bandY, 0, bandY + bandH);
+  if (state.titlePosition === 'top') {
+    scrim.addColorStop(0, 'rgba(8,2,20,0.82)');
+    scrim.addColorStop(1, 'rgba(8,2,20,0)');
+  } else {
+    scrim.addColorStop(0, 'rgba(8,2,20,0)');
+    scrim.addColorStop(1, 'rgba(8,2,20,0.88)');
+  }
+  ctx.fillStyle = scrim;
+  ctx.fillRect(frame, bandY, width - frame * 2, bandH);
+  const centerX = width / 2;
+  const titleY = state.titlePosition === 'top' ? bandY + titleSize * 1.05 : bandY + titleSize * 0.95;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-
-  // Title: thick white fill, dark outline, warm shadow.
-  ctx.font = `900 ${titleSize}px Impact, 'Arial Black', 'Helvetica Neue', sans-serif`;
-  ctx.shadowColor = grade.glow;
-  ctx.shadowBlur = titleSize * 0.35;
-  ctx.shadowOffsetY = titleSize * 0.06;
-  ctx.lineWidth = Math.max(4, titleSize * 0.09);
-  ctx.strokeStyle = grade.ink;
+  ctx.font = `900 ${titleSize}px "Arial Black", Impact, "Segoe UI", sans-serif`;
+  ctx.shadowColor = 'rgba(255,46,136,0.85)';
+  ctx.shadowBlur = titleSize * 0.18;
+  ctx.shadowOffsetY = titleSize * 0.05;
   ctx.lineJoin = 'round';
-  const titleY = bandY + bandH * 0.45;
-  const titleText = (poster.title || 'VICE CITY').toUpperCase();
-  ctx.strokeText(titleText, cx, titleY);
+  ctx.lineWidth = titleSize * 0.14;
+  ctx.strokeStyle = '#12041f';
+  ctx.strokeText(state.title.toUpperCase(), centerX, titleY);
   const titleFill = ctx.createLinearGradient(0, titleY - titleSize / 2, 0, titleY + titleSize / 2);
-  titleFill.addColorStop(0, '#ffffff');
-  titleFill.addColorStop(0.6, '#ffe9c4');
-  titleFill.addColorStop(1, grade.accent);
+  titleFill.addColorStop(0, '#fff7d6');
+  titleFill.addColorStop(0.5, '#ffd319');
+  titleFill.addColorStop(1, '#ff7a18');
   ctx.fillStyle = titleFill;
-  ctx.fillText(titleText, cx, titleY);
+  ctx.fillText(state.title.toUpperCase(), centerX, titleY);
+  ctx.shadowColor = 'transparent';
   ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
-
-  // Tagline under the title.
-  ctx.font = `700 ${tagSize}px 'Trebuchet MS', Verdana, sans-serif`;
+  ctx.font = `700 ${tagSize}px "Segoe UI", system-ui, sans-serif`;
   ctx.fillStyle = '#ffffff';
-  ctx.lineWidth = Math.max(2, tagSize * 0.14);
-  ctx.strokeStyle = 'rgba(10, 2, 24, 0.85)';
-  const tagY = bandY + bandH * 0.78;
-  if (poster.tagline) {
-    ctx.strokeText(poster.tagline, cx, tagY);
-    ctx.fillText(poster.tagline, cx, tagY);
-  }
-
-  // Credit strip at the opposite edge.
-  ctx.font = `700 ${creditSize}px 'Trebuchet MS', Verdana, sans-serif`;
-  ctx.fillStyle = 'rgba(255,255,255,0.92)';
-  const creditY = top ? coverH - creditSize * 1.6 : creditSize * 1.6;
-  if (poster.credit) ctx.fillText(poster.credit, cx, creditY);
+  ctx.lineWidth = tagSize * 0.22;
+  ctx.strokeStyle = 'rgba(10,2,24,0.9)';
+  const tagY = titleY + titleSize * 0.62;
+  ctx.strokeText(state.tagline, centerX, tagY);
+  ctx.fillText(state.tagline, centerX, tagY);
+  ctx.font = `800 ${bySize}px "Segoe UI", system-ui, sans-serif`;
+  ctx.fillStyle = '#19e3ff';
+  const byY = state.titlePosition === 'top' ? height - frame - bySize : frame + bySize;
+  ctx.fillText(state.byline.toUpperCase(), centerX, byY);
   ctx.restore();
 }
 
-function paintPosterBorder(ctx, coverW, coverH, grade) {
-  if (!poster.border) return;
-  const outer = Math.max(6, coverW * 0.008);
-  const inner = Math.max(2, coverW * 0.002);
+function drawPosterBorder(ctx, width, height) {
   ctx.save();
-  ctx.strokeStyle = grade.accent;
-  ctx.lineWidth = outer;
-  ctx.strokeRect(outer / 2, outer / 2, coverW - outer, coverH - outer);
-  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-  ctx.lineWidth = inner;
-  const gap = outer * 2.2;
-  ctx.strokeRect(gap, gap, coverW - gap * 2, coverH - gap * 2);
+  ctx.strokeStyle = '#f5efff';
+  ctx.lineWidth = Math.max(3, width * 0.004);
+  ctx.strokeRect(2, 2, width - 4, height - 4);
+  ctx.strokeStyle = '#ff2e88';
+  ctx.lineWidth = Math.max(2, width * 0.002);
+  ctx.strokeRect(Math.round(width * 0.012), Math.round(height * 0.012), width - Math.round(width * 0.024), height - Math.round(height * 0.024));
   ctx.restore();
 }
 
-// ---------------------------------------------------------------------------
-// Full cover render — shared by the live preview and the PNG export
-// ---------------------------------------------------------------------------
-
-function renderCover(ctx, coverW, coverH) {
-  const grade = VICE_GRADES[poster.grade];
-  const strength = poster.gradeStrength;
-
-  ctx.save();
-  ctx.fillStyle = '#0b0218';
-  ctx.fillRect(0, 0, coverW, coverH);
-
-  const count = activePanelCount();
-  for (let i = 0; i < count; i++) {
-    const rect = panelRect(i, coverW, coverH);
-    const panel = poster.panels[i];
-    const photo = photoLibrary[panel.photo];
-    drawPhotoIntoPanel(ctx, photo ? photo.image : null, rect, panel);
-    paintGradeWash(ctx, rect, grade, strength);
-    paintVignette(ctx, rect, grade.vignette * strength);
-    // Thin neon divider between panels.
-    ctx.strokeStyle = grade.accent;
-    ctx.globalAlpha = 0.85;
-    ctx.lineWidth = Math.max(2, coverW * 0.002);
-    ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
-    ctx.globalAlpha = 1;
-  }
-
-  paintGrain(ctx, coverW, coverH, grade.grain * strength);
-  paintPosterLettering(ctx, coverW, coverH, grade);
-  paintPosterBorder(ctx, coverW, coverH, grade);
-  ctx.restore();
+function drawCover(ctx, width, height) {
+  ctx.clearRect(0, 0, width, height);
+  const bg = ctx.createLinearGradient(0, 0, width, height);
+  bg.addColorStop(0, '#1a0f2e');
+  bg.addColorStop(1, '#0d0618');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, width, height);
+  const rects = layoutRects(state.layout, width, height);
+  rects.forEach((rect, index) => {
+    const panel = state.panels[index] || { photo: 0, zoom: 1, panX: 0, panY: 0, rotation: 0, flipped: false };
+    drawPanelPhoto(ctx, rect, panel, state.photos[panel.photo], index);
+    applyGradeOverlay(ctx, rect, index);
+  });
+  drawLettering(ctx, width, height);
+  drawPosterBorder(ctx, width, height);
 }
 
 function renderPreview() {
-  const size = EXPORT_SIZES[poster.exportSize];
-  coverCanvas.width = size.w;
-  coverCanvas.height = size.h;
-  renderCover(previewCtx, size.w, size.h);
-  updateSelectedPanelLabel();
+  const [exportW, exportH] = EXPORT_SIZES[state.exportSize];
+  const scale = Math.min(960 / exportW, 540 / exportH);
+  const previewW = Math.round(exportW * scale);
+  const previewH = Math.round(exportH * scale);
+  previewCanvas.width = previewW;
+  previewCanvas.height = previewH;
+  drawCover(previewCtx, previewW, previewH);
+  document.getElementById('metaLayout').textContent = LAYOUT_NAMES[state.layout];
+  document.getElementById('metaGrade').textContent = GRADE_NAMES[state.grade];
+  document.getElementById('metaSize').textContent = state.exportSize.replace('x', ' × ');
+  document.getElementById('metaPhotos').textContent = `${state.photos.length} photo${state.photos.length === 1 ? '' : 's'} loaded`;
+  document.getElementById('zoomValue').textContent = `${Math.round((state.panels[state.selectedPanel]?.zoom ?? 1) * 100)}%`;
+  document.getElementById('gradeStrengthValue').textContent = `${state.gradeStrength}%`;
 }
 
-// ---------------------------------------------------------------------------
-// Export — one click renders the exact post size and downloads a PNG
-// ---------------------------------------------------------------------------
-
-function exportCoverPng() {
-  const size = EXPORT_SIZES[poster.exportSize];
-  const offscreen = document.createElement('canvas');
-  offscreen.width = size.w;
-  offscreen.height = size.h;
-  renderCover(offscreen.getContext('2d'), size.w, size.h);
-  offscreen.toBlob((blob) => {
+function exportCover() {
+  const [width, height] = EXPORT_SIZES[state.exportSize];
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  drawCover(canvas.getContext('2d'), width, height);
+  const status = document.getElementById('exportStatus');
+  status.textContent = 'Rendering your PNG…';
+  canvas.toBlob((blob) => {
     if (!blob) {
-      exportNote.textContent = 'Export failed — please try again.';
+      status.textContent = 'Export failed — try again.';
       return;
     }
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `vice-cover-${size.w}x${size.h}.png`;
-    document.body.appendChild(link);
+    link.download = `vice-cover-${state.exportSize}.png`;
     link.click();
-    link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
-    exportNote.textContent = `Exported ${size.label} PNG — ${size.w} × ${size.h}. Share it anywhere.`;
+    status.textContent = `Exported ${width} × ${height} PNG — check your downloads.`;
   }, 'image/png');
 }
 
-// ---------------------------------------------------------------------------
-// Photo tray + panel controls
-// ---------------------------------------------------------------------------
-
-const photoTray = document.getElementById('photoTray');
-
-function rebuildPhotoTray() {
-  photoTray.innerHTML = '';
-  photoLibrary.forEach((entry, index) => {
-    const thumb = document.createElement('button');
-    thumb.type = 'button';
-    thumb.className = 'photo-thumb';
-    thumb.title = entry.name;
-    const img = document.createElement('img');
-    img.src = entry.src;
-    img.alt = entry.name;
-    thumb.appendChild(img);
-    const label = document.createElement('span');
-    label.textContent = entry.name;
-    thumb.appendChild(label);
-    thumb.addEventListener('click', () => {
-      poster.panels[poster.selectedPanel].photo = index;
-      renderPreview();
-      rebuildPhotoTray();
-    });
-    photoTray.appendChild(thumb);
+function loadImageFromUrl(url, name) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve({ name, image, url });
+    image.onerror = () => reject(new Error(`Could not load ${name}`));
+    image.src = url;
   });
 }
 
-function updateSelectedPanelLabel() {
-  const label = document.getElementById('selectedPanelLabel');
-  if (!label) return;
-  label.textContent = `Panel ${poster.selectedPanel + 1} of ${activePanelCount()} — drag the photo on the preview to move it`;
-  const zoom = document.getElementById('zoomSlider');
-  const rotate = document.getElementById('rotateSlider');
-  const panel = poster.panels[poster.selectedPanel];
-  if (zoom) zoom.value = String(Math.round(panel.zoom * 100));
-  if (rotate) rotate.value = String(panel.rotate);
-}
-
-function selectPanelAt(clientX, clientY) {
-  const rect = coverCanvas.getBoundingClientRect();
-  const scaleX = coverCanvas.width / rect.width;
-  const scaleY = coverCanvas.height / rect.height;
-  const x = (clientX - rect.left) * scaleX;
-  const y = (clientY - rect.top) * scaleY;
-  for (let i = 0; i < activePanelCount(); i++) {
-    const r = panelRect(i, coverCanvas.width, coverCanvas.height);
-    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-      poster.selectedPanel = i;
-      return true;
+async function loadDemoPhotos() {
+  for (const path of DEMO_PHOTOS) {
+    try {
+      const photo = await loadImageFromUrl(path, path.split('/').pop());
+      state.photos.push(photo);
+    } catch (error) {
+      console.warn(error.message);
     }
   }
-  return false;
+  rebuildPhotoThumbs();
+  renderPreview();
 }
 
-// Drag-to-pan on the preview canvas.
-let dragState = null;
-coverCanvas.addEventListener('pointerdown', (event) => {
-  if (!selectPanelAt(event.clientX, event.clientY)) return;
-  const rect = coverCanvas.getBoundingClientRect();
-  const scaleX = coverCanvas.width / rect.width;
-  const scaleY = coverCanvas.height / rect.height;
-  dragState = {
-    startX: event.clientX, startY: event.clientY,
-    panX: poster.panels[poster.selectedPanel].panX,
-    panY: poster.panels[poster.selectedPanel].panY,
-    scaleX, scaleY,
-  };
-  coverCanvas.setPointerCapture(event.pointerId);
-  renderPreview();
-});
-coverCanvas.addEventListener('pointermove', (event) => {
-  if (!dragState) return;
-  const panel = poster.panels[poster.selectedPanel];
-  panel.panX = dragState.panX + (event.clientX - dragState.startX) * dragState.scaleX;
-  panel.panY = dragState.panY + (event.clientY - dragState.startY) * dragState.scaleY;
-  renderPreview();
-});
-coverCanvas.addEventListener('pointerup', () => { dragState = null; });
-coverCanvas.addEventListener('pointercancel', () => { dragState = null; });
-
-// ---------------------------------------------------------------------------
-// Control wiring
-// ---------------------------------------------------------------------------
-
-function markActive(groupSelector, button) {
-  document.querySelectorAll(groupSelector).forEach((b) => b.classList.remove('is-active'));
-  button.classList.add('is-active');
-}
-
-document.querySelectorAll('.layout-btn').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    poster.layout = btn.dataset.layout;
-    poster.selectedPanel = 0;
-    markActive('.layout-btn', btn);
-    renderPreview();
+function rebuildPhotoThumbs() {
+  const holder = document.getElementById('photoThumbs');
+  holder.innerHTML = '';
+  state.photos.forEach((photo, index) => {
+    const thumb = document.createElement('img');
+    thumb.className = 'photo-thumb' + (index === state.selectedPhoto ? ' selected' : '');
+    thumb.src = photo.url;
+    thumb.alt = photo.name;
+    thumb.title = photo.name;
+    thumb.addEventListener('click', () => {
+      state.selectedPhoto = index;
+      const panel = state.panels[state.selectedPanel];
+      if (panel) panel.photo = index;
+      rebuildPhotoThumbs();
+      renderPreview();
+    });
+    holder.appendChild(thumb);
   });
-});
-
-document.querySelectorAll('.grade-btn').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    poster.grade = btn.dataset.grade;
-    markActive('.grade-btn', btn);
-    renderPreview();
-  });
-});
-
-document.querySelectorAll('.size-btn').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    poster.exportSize = btn.dataset.size;
-    markActive('.size-btn', btn);
-    renderPreview();
-  });
-});
-
-document.getElementById('gradeStrength').addEventListener('input', (event) => {
-  poster.gradeStrength = Number(event.target.value) / 100;
-  renderPreview();
-});
-
-document.getElementById('zoomSlider').addEventListener('input', (event) => {
-  poster.panels[poster.selectedPanel].zoom = Number(event.target.value) / 100;
-  renderPreview();
-});
-
-document.getElementById('rotateSlider').addEventListener('input', (event) => {
-  poster.panels[poster.selectedPanel].rotate = Number(event.target.value);
-  renderPreview();
-});
-
-document.getElementById('flipBtn').addEventListener('click', () => {
-  const panel = poster.panels[poster.selectedPanel];
-  panel.flip = !panel.flip;
-  renderPreview();
-});
-
-document.getElementById('nextPhotoBtn').addEventListener('click', () => {
-  const panel = poster.panels[poster.selectedPanel];
-  panel.photo = (panel.photo + 1) % photoLibrary.length;
-  renderPreview();
-  rebuildPhotoTray();
-});
-
-document.getElementById('resetPanelBtn').addEventListener('click', () => {
-  poster.panels[poster.selectedPanel] = freshPanel(poster.selectedPanel % photoLibrary.length);
-  renderPreview();
-});
-
-document.getElementById('photoUpload').addEventListener('change', (event) => {
-  addUploadedPhotos(event.target.files);
-  event.target.value = '';
-});
-
-document.getElementById('titleInput').addEventListener('input', (event) => {
-  poster.title = event.target.value;
-  renderPreview();
-});
-document.getElementById('taglineInput').addEventListener('input', (event) => {
-  poster.tagline = event.target.value;
-  renderPreview();
-});
-document.getElementById('creditInput').addEventListener('input', (event) => {
-  poster.credit = event.target.value;
-  renderPreview();
-});
-document.getElementById('titlePosSelect').addEventListener('change', (event) => {
-  poster.titlePos = event.target.value;
-  renderPreview();
-});
-document.getElementById('borderToggle').addEventListener('change', (event) => {
-  poster.border = event.target.checked;
-  renderPreview();
-});
-
-document.getElementById('exportBtn').addEventListener('click', exportCoverPng);
-
-document.getElementById('randomizeBtn').addEventListener('click', () => {
-  const layouts = Object.keys(POSTER_LAYOUTS);
-  const grades = Object.keys(VICE_GRADES);
-  poster.layout = layouts[Math.floor(Math.random() * layouts.length)];
-  poster.grade = grades[Math.floor(Math.random() * grades.length)];
-  poster.panels.forEach((panel) => {
-    panel.photo = Math.floor(Math.random() * photoLibrary.length);
-    panel.zoom = 1 + Math.random() * 0.5;
-    panel.rotate = Math.round((Math.random() - 0.5) * 20);
-  });
-  document.querySelectorAll('.layout-btn').forEach((b) =>
-    b.classList.toggle('is-active', b.dataset.layout === poster.layout));
-  document.querySelectorAll('.grade-btn').forEach((b) =>
-    b.classList.toggle('is-active', b.dataset.grade === poster.grade));
-  poster.selectedPanel = 0;
-  renderPreview();
-});
-
-document.getElementById('resetBtn').addEventListener('click', () => {
-  const fresh = defaultPosterState();
-  Object.assign(poster, fresh);
-  document.querySelectorAll('.layout-btn').forEach((b) =>
-    b.classList.toggle('is-active', b.dataset.layout === poster.layout));
-  document.querySelectorAll('.grade-btn').forEach((b) =>
-    b.classList.toggle('is-active', b.dataset.grade === poster.grade));
-  document.querySelectorAll('.size-btn').forEach((b) =>
-    b.classList.toggle('is-active', b.dataset.size === poster.exportSize));
-  document.getElementById('titleInput').value = poster.title;
-  document.getElementById('taglineInput').value = poster.tagline;
-  document.getElementById('creditInput').value = poster.credit;
-  document.getElementById('titlePosSelect').value = poster.titlePos;
-  document.getElementById('borderToggle').checked = poster.border;
-  renderPreview();
-});
-
-// ---------------------------------------------------------------------------
-// Deterministic shot mode (for the maker's own screenshots) + self-test
-// ---------------------------------------------------------------------------
-
-function applyShotParams(params) {
-  const photoName = params.get('photo');
-  if (photoName) {
-    const index = photoLibrary.findIndex((p) => p.src.includes(photoName));
-    if (index >= 0) poster.panels.forEach((panel, i) => { panel.photo = (index + i) % photoLibrary.length; });
+  for (let i = state.photos.length; i < 4; i++) {
+    const empty = document.createElement('div');
+    empty.className = 'photo-thumb empty';
+    empty.textContent = '+';
+    empty.title = 'Upload a photo';
+    holder.appendChild(empty);
   }
+}
+
+function rebuildPanelPicker() {
+  const holder = document.getElementById('panelPicker');
+  holder.innerHTML = '';
+  state.panels.forEach((panel, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'panel-pick' + (index === state.selectedPanel ? ' active' : '');
+    button.textContent = `Panel ${index + 1}`;
+    button.addEventListener('click', () => {
+      state.selectedPanel = index;
+      state.selectedPhoto = panel.photo;
+      rebuildPanelPicker();
+      syncPanelControls();
+      renderPreview();
+    });
+    holder.appendChild(button);
+  });
+}
+
+function syncPanelControls() {
+  const panel = state.panels[state.selectedPanel];
+  if (!panel) return;
+  document.getElementById('zoomSlider').value = String(Math.round(panel.zoom * 100));
+  document.getElementById('panXSlider').value = String(panel.panX);
+  document.getElementById('panYSlider').value = String(panel.panY);
+}
+
+function syncLayoutButtons() {
+  document.querySelectorAll('#layoutButtons .chip-button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.layout === state.layout);
+  });
+  document.querySelectorAll('#gradeButtons .chip-button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.grade === state.grade);
+  });
+  document.querySelectorAll('#exportSizeButtons .chip-button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.exportSize === state.exportSize);
+  });
+  document.querySelectorAll('#titlePositionButtons .chip-button').forEach((button) => {
+    button.classList.toggle('active', button.dataset.titlePos === state.titlePosition);
+  });
+}
+
+function wireControls() {
+  document.getElementById('photoInput').addEventListener('change', async (event) => {
+    const files = Array.from(event.target.files || []).slice(0, 4 - state.photos.length);
+    for (const file of files) {
+      const url = URL.createObjectURL(file);
+      try {
+        const photo = await loadImageFromUrl(url, file.name);
+        state.photos.push(photo);
+      } catch (error) {
+        console.warn(error.message);
+      }
+    }
+    if (state.photos.length) state.selectedPhoto = state.photos.length - 1;
+    rebuildPhotoThumbs();
+    renderPreview();
+    event.target.value = '';
+  });
+
+  document.querySelectorAll('#layoutButtons .chip-button').forEach((button) => {
+    button.addEventListener('click', () => applyLayout(button.dataset.layout));
+  });
+  document.querySelectorAll('#gradeButtons .chip-button').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.grade = button.dataset.grade;
+      syncLayoutButtons();
+      renderPreview();
+    });
+  });
+  document.querySelectorAll('#exportSizeButtons .chip-button').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.exportSize = button.dataset.exportSize;
+      syncLayoutButtons();
+      renderPreview();
+    });
+  });
+  document.querySelectorAll('#titlePositionButtons .chip-button').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.titlePosition = button.dataset.titlePos;
+      syncLayoutButtons();
+      renderPreview();
+    });
+  });
+
+  document.getElementById('shuffleLayoutButton').addEventListener('click', () => {
+    const layouts = Object.keys(LAYOUT_NAMES).filter((name) => name !== state.layout);
+    const grades = Object.keys(GRADE_NAMES).filter((name) => name !== state.grade);
+    applyLayout(layouts[Math.floor(Math.random() * layouts.length)]);
+    state.grade = grades[Math.floor(Math.random() * grades.length)];
+    syncLayoutButtons();
+    renderPreview();
+  });
+  document.getElementById('resetButton').addEventListener('click', () => {
+    state.grade = 'sunset';
+    state.gradeStrength = 70;
+    state.title = 'VICE HEIST';
+    state.tagline = 'One last sunset. One last score.';
+    state.byline = 'STARRING YOU';
+    state.titlePosition = 'top';
+    state.exportSize = '1920x1080';
+    document.getElementById('titleInput').value = state.title;
+    document.getElementById('taglineInput').value = state.tagline;
+    document.getElementById('nameInput').value = state.byline;
+    document.getElementById('gradeStrength').value = '70';
+    applyLayout('grid');
+    syncLayoutButtons();
+    renderPreview();
+  });
+
+  document.getElementById('zoomSlider').addEventListener('input', (event) => {
+    const panel = state.panels[state.selectedPanel];
+    if (panel) panel.zoom = Number(event.target.value) / 100;
+    renderPreview();
+  });
+  document.getElementById('panXSlider').addEventListener('input', (event) => {
+    const panel = state.panels[state.selectedPanel];
+    if (panel) panel.panX = Number(event.target.value);
+    renderPreview();
+  });
+  document.getElementById('panYSlider').addEventListener('input', (event) => {
+    const panel = state.panels[state.selectedPanel];
+    if (panel) panel.panY = Number(event.target.value);
+    renderPreview();
+  });
+  document.getElementById('rotateButton').addEventListener('click', () => {
+    const panel = state.panels[state.selectedPanel];
+    if (panel) panel.rotation = (panel.rotation + 90) % 360;
+    renderPreview();
+  });
+  document.getElementById('flipButton').addEventListener('click', () => {
+    const panel = state.panels[state.selectedPanel];
+    if (panel) panel.flipped = !panel.flipped;
+    renderPreview();
+  });
+  document.getElementById('swapPhotoButton').addEventListener('click', () => {
+    const panel = state.panels[state.selectedPanel];
+    if (panel && state.photos.length) {
+      panel.photo = (panel.photo + 1) % state.photos.length;
+      state.selectedPhoto = panel.photo;
+      rebuildPhotoThumbs();
+      renderPreview();
+    }
+  });
+
+  document.getElementById('gradeStrength').addEventListener('input', (event) => {
+    state.gradeStrength = Number(event.target.value);
+    renderPreview();
+  });
+  document.getElementById('titleInput').addEventListener('input', (event) => {
+    state.title = event.target.value || 'VICE HEIST';
+    renderPreview();
+  });
+  document.getElementById('taglineInput').addEventListener('input', (event) => {
+    state.tagline = event.target.value;
+    renderPreview();
+  });
+  document.getElementById('nameInput').addEventListener('input', (event) => {
+    state.byline = event.target.value || 'STARRING YOU';
+    renderPreview();
+  });
+  document.getElementById('exportButton').addEventListener('click', exportCover);
+
+  let dragging = false;
+  let lastX = 0, lastY = 0;
+  previewCanvas.addEventListener('pointerdown', (event) => {
+    dragging = true;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    previewCanvas.setPointerCapture(event.pointerId);
+  });
+  previewCanvas.addEventListener('pointermove', (event) => {
+    if (!dragging) return;
+    const panel = state.panels[state.selectedPanel];
+    if (!panel) return;
+    const scale = previewCanvas.width / previewCanvas.clientWidth;
+    panel.panX += ((event.clientX - lastX) * scale / previewCanvas.width) * 120;
+    panel.panY += ((event.clientY - lastY) * scale / previewCanvas.height) * 120;
+    panel.panX = Math.max(-100, Math.min(100, panel.panX));
+    panel.panY = Math.max(-100, Math.min(100, panel.panY));
+    lastX = event.clientX;
+    lastY = event.clientY;
+    syncPanelControls();
+    renderPreview();
+  });
+  const stopDrag = () => { dragging = false; };
+  previewCanvas.addEventListener('pointerup', stopDrag);
+  previewCanvas.addEventListener('pointercancel', stopDrag);
+}
+
+async function applyShotMode() {
+  const params = new URLSearchParams(window.location.search);
+  const shot = params.get('shot');
+  if (!shot) return false;
   const caption = params.get('caption');
   if (caption) {
-    poster.title = caption.toUpperCase();
-    const titleInput = document.getElementById('titleInput');
-    if (titleInput) titleInput.value = poster.title;
+    state.title = caption;
+    document.getElementById('titleInput').value = caption;
+  }
+  const photoName = params.get('photo');
+  if (photoName) {
+    try {
+      const photo = await loadImageFromUrl(`samples/${photoName}.jpg`, `${photoName}.jpg`);
+      state.photos = [photo];
+      if (photoName === 'boulevard') {
+        const second = await loadImageFromUrl('samples/pier.jpg', 'pier.jpg');
+        state.photos.push(second);
+      } else {
+        // One photo supplied: reuse it in every panel so no panel is empty.
+        state.photos.push(photo);
+      }
+    } catch (error) {
+      console.warn(error.message);
+    }
   }
   const layout = params.get('layout');
-  if (layout && POSTER_LAYOUTS[layout]) {
-    poster.layout = layout;
-    document.querySelectorAll('.layout-btn').forEach((b) =>
-      b.classList.toggle('is-active', b.dataset.layout === layout));
-  }
+  if (layout && LAYOUT_NAMES[layout]) state.layout = layout;
   const grade = params.get('grade');
-  if (grade && VICE_GRADES[grade]) {
-    poster.grade = grade;
-    document.querySelectorAll('.grade-btn').forEach((b) =>
-      b.classList.toggle('is-active', b.dataset.grade === grade));
-  }
+  if (grade && GRADE_NAMES[grade]) state.grade = grade;
   const size = params.get('size');
-  if (size && EXPORT_SIZES[size]) {
-    poster.exportSize = size;
-    document.querySelectorAll('.size-btn').forEach((b) =>
-      b.classList.toggle('is-active', b.dataset.size === size));
+  if (size && EXPORT_SIZES[size]) state.exportSize = size;
+  state.panels = defaultPanels(panelCountForLayout(state.layout));
+  if (state.layout === 'vertical') {
+    // Same photo in all three columns: give each a different crop so the
+    // panels read as three shots, not one photo repeated.
+    state.panels[1].zoom = 1.6;
+    state.panels[1].panX = -30;
+    state.panels[2].zoom = 1.35;
+    state.panels[2].panY = 18;
   }
-  const pos = params.get('titlepos');
-  if (pos === 'top' || pos === 'bottom') {
-    poster.titlePos = pos;
-    document.getElementById('titlePosSelect').value = pos;
-  }
-}
-
-function runSelfTest() {
-  const results = [];
-  for (const [key, size] of Object.entries(EXPORT_SIZES)) {
-    const offscreen = document.createElement('canvas');
-    offscreen.width = size.w;
-    offscreen.height = size.h;
-    renderCover(offscreen.getContext('2d'), size.w, size.h);
-    const ok = offscreen.width === size.w && offscreen.height === size.h;
-    results.push(`EXPORT ${key} ${ok ? 'OK' : 'FAIL'} ${offscreen.width}x${offscreen.height}`);
-  }
-  results.push(`LAYOUTS ${Object.keys(POSTER_LAYOUTS).join(',')}`);
-  results.push(`GRADES ${Object.keys(VICE_GRADES).join(',')}`);
-  results.push(`PHOTOS ${photoLibrary.filter((p) => p.loaded).length}/${photoLibrary.length} loaded`);
-  selftestBox.textContent = results.join(' | ');
-  document.title = `SELFTEST ${results.join(' | ')}`;
-}
-
-// ---------------------------------------------------------------------------
-// Start up
-// ---------------------------------------------------------------------------
-
-rebuildPhotoTray();
-const urlParams = new URLSearchParams(window.location.search);
-if (urlParams.get('shot') === 'cover') {
-  document.body.classList.add('shot-cover');
-  applyShotParams(urlParams);
-} else if (urlParams.get('shot') === 'editor') {
-  applyShotParams(urlParams);
-}
-loadAllDemoPhotos().then(() => {
+  rebuildPhotoThumbs();
+  rebuildPanelPicker();
+  syncLayoutButtons();
   renderPreview();
-  if (urlParams.get('selftest') === '1') runSelfTest();
-});
+  if (shot === 'cover') {
+    const [width, height] = EXPORT_SIZES[state.exportSize];
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    drawCover(canvas.getContext('2d'), width, height);
+    document.body.classList.add('shot-cover');
+    shotImage.src = canvas.toDataURL('image/jpeg', 0.88);
+    shotImage.alt = `Exported cover: ${state.title}`;
+  }
+  return true;
+}
+
+async function startStudio() {
+  state.panels = defaultPanels(4);
+  wireControls();
+  rebuildPanelPicker();
+  syncPanelControls();
+  const inShotMode = await applyShotMode();
+  if (!inShotMode) {
+    await loadDemoPhotos();
+  }
+  renderPreview();
+}
+
+startStudio();

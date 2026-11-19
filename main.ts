@@ -1,19 +1,7 @@
-// Vice Cover Studio — a working gta6-cover-art-01 entry (Node 22, standard
-// library only). The app is this directory's app/ folder: plain static files a
-// desktop browser loads offline (app/index.html and its classic script, no
-// library and no network request). The program hands it in: it copies app/ and
-// screenshots/ from beside this file to /output and writes /output/dossier.json,
-// the summary the judge reads, with the vendored make.fun library.
-//
-// Vice Cover Studio turns 1-4 photos plus a caption into multi-panel GTA-style
-// cover art — 2x2 grid, hero + strip, 3-panel vertical or duo split — with a
-// Vice City sunset / neon / noir / pastel grade, bold poster lettering, and a
-// one-click PNG export in 1080x1080, 1080x1350 or 1920x1080. Photos are read
-// on the machine and never uploaded; all artwork is original, no Rockstar
-// Games logo, artwork or fonts.
-//
-// Serve it locally with `node serve.ts`, then open http://localhost:8080.
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
+// Vice Cover Studio — entry program (Node 22, standard library only).
+// It hands the static app in app/ plus screenshots/ to the grader's /output
+// directory and writes /output/dossier.json with the kit's vendored library.
+// Outside the grader, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
 import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -21,27 +9,23 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-app.ts';
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const repoRoot = fileURLToPath(new URL('.', import.meta.url));
+const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-// Vice Cover Studio refuses to hand in an entry without its front door: the
-// grader's screenshots and dossier both start from app/index.html.
-if (!existsSync(join(here, 'app', 'index.html'))) {
-  throw new Error('app/index.html is missing — cannot build the dossier');
+mkdirSync(outputDir, { recursive: true });
+cpSync(join(repoRoot, 'app'), join(outputDir, 'app'), { recursive: true });
+mkdirSync(join(outputDir, 'screenshots'), { recursive: true });
+if (existsSync(join(repoRoot, 'screenshots'))) {
+  cpSync(join(repoRoot, 'screenshots'), join(outputDir, 'screenshots'), { recursive: true });
 }
 
-mkdirSync(out, { recursive: true });
-cpSync(join(here, 'app'), join(out, 'app'), { recursive: true });
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
-
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
-// scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files in app/ or 48 MiB of app
-// files, in all, or a path under app/ over 1000 bytes: app/ counts beside /output's own 1000-entry cap, its
-// screenshots/ and dossier.json).
+// Scorer caps: text is capped at 160 KiB by the dossier builder; the other
+// limits refuse an entry the scorer would refuse (at most 4 screenshots, each
+// at most 256 KiB; app/ at most 993 files and 48 MiB in all, no path over
+// 1000 bytes). /output itself is capped at 1000 entries and 64 MiB.
 writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, {
+  join(outputDir, 'dossier.json'),
+  buildDossier(outputDir, {
     text_max_bytes: 163840,
     screenshots: { max: 4, max_bytes: 262144 },
     app_max_files: 993,
